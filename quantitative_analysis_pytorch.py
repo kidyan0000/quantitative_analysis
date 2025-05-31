@@ -5,7 +5,7 @@ import csv
 import os
 import glob
 from datetime import datetime
-# from curl_cffi import requests
+from curl_cffi import requests
 import time
 import matplotlib.pyplot as plt
 import sys
@@ -29,15 +29,14 @@ def run_once(f):
 
 # Choose the download data
 @run_once
-def download_data(tickers, start_date, end_date):
+def download_data(ticker, start_date, end_date):
     # Initialize the dataframe for close 
     close_df = pd.DataFrame()
     ## Create an empty DataFrame to store the close prices
-    for ticker in tickers:
-        # session = requests.Session(impersonate="chrome")
-        # close_df[ticker] = yf.download(ticker, start=start_date, end=end_date, session=session)
-        close_df[ticker] = yf.download(ticker, start=start_date, end=end_date)['Close']
-        time.sleep(2)
+    session = requests.Session(impersonate="chrome")
+    close_df = yf.download(ticker, start=start_date, end=end_date, session=session)['Close']
+    # close_df = yf.download(ticker, start=start_date, end=end_date)['Close']
+    time.sleep(2)
     return close_df
 
 def evaluate_data(close_df, ticker):
@@ -175,7 +174,7 @@ class PredictionModel(nn.Module):
         self.num_layers = num_layers
         self.hidden_dim = hidden_dim
 
-        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True, dropout=0.2)
+        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
         self.fc   = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x):
@@ -193,6 +192,7 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print('Device:', device)
     ticker = "BTC-USD"
+    # ticker = "JPM"
 
     start_date = '2000-01-01'
     end_date = '2025-05-27'
@@ -240,9 +240,9 @@ def main():
         if i%25 == 0:
             print('epoch: ', i, 'loss: ', loss.item())
     
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
 
     model.eval()
     y_test_pred = model(X_test)
