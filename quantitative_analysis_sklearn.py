@@ -10,14 +10,10 @@ import time
 import matplotlib.pyplot as plt
 import sys
 
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression, LinearRegression
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LinearRegression
-
+from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-
-import torch
-import torch.nn as nn
 
 def run_once(f):
     def wrapper(*args, **kwargs):
@@ -169,15 +165,6 @@ def evaluate_strategy(returns):
     max_drawdown = (returns / returns.cummax() - 1).min()
     return total_return, annualized_return, sharpe_ratio, max_drawdown
 
-class LogisticRegressionModel(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.linear = nn.Linear(1, 1)  # One input → one output
-
-    def forward(self, x):
-        # Applies sigmoid() to the output so it becomes a probability (0 to 1).
-        return torch.sigmoid(self.linear(x))  # Apply sigmoid
-
 def main():
     ## Define the list of tickers
     # tickers = ['SPY','BND','GLD','QQQ','VTI', 'JPM']
@@ -191,6 +178,7 @@ def main():
     end_date = datetime.today()
     data_file = str(end_date.year)+str(end_date.month)+str(end_date.day)+'_stock_prices.xlsx'
     '''
+    
     # Check if the dataframe already exists
     data_path = os.path.join(sys.path[0], data_file)
     if not os.path.isfile(data_path):
@@ -220,32 +208,9 @@ def main():
     y_test = np.sign(test_data_dict['BTC-USD']['Return'].values)
 
     # Logistic Regression
-    # logreg = LogisticRegression(solver='lbfgs', max_iter=1000)
-    # logreg.fit(X_train, y_train)
-    X = torch.tensor(X_train, dtype=torch.float32)[:,[0]]
-    y = torch.tensor((y_train+1)/2, dtype=torch.float32).unsqueeze(1)
-    model = LogisticRegressionModel()
-    criterion = nn.BCELoss()  # Binary Cross Entropy Loss
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
-    num_epochs = 1000
-    for epoch in range(num_epochs):
-        model.train()
-        y_pred = model(X)                # Forward pass
-        loss = criterion(y_pred, y)      # Compute loss
-        optimizer.zero_grad()            # Reset gradients
-        loss.backward()                  # Compute new gradients
-        optimizer.step()                 # Update weights
-        if (epoch + 1) % 20 == 0:
-            print(f"Epoch {epoch+1}/{num_epochs}, Loss: {loss.item():.4f}")
-    with torch.no_grad():
-        X_sorted, indices = torch.sort(X, dim=0)
-        y_prob = model(X_sorted)
-    plt.figure()
-    plt.scatter(X.numpy(), y.numpy(), label="Data")
-    plt.plot(X_sorted.numpy(), y_prob.numpy(), color='red', label='Logistic Curve')
-    plt.show()
+    logreg = LogisticRegression(solver='lbfgs', max_iter=1000)
+    logreg.fit(X_train, y_train)
 
-    '''
     # Evaluate the model
     accuracy, precision, recall, f1 = evaluate_model(logreg, X_test, y_test)
     print(f"Logistic Regression: \nAccuracy={accuracy}, \nPrecision={precision}, \nRecall={recall}, \nF1-score={f1}")
@@ -267,9 +232,7 @@ def main():
     print(f"Annualized Return: {logreg_annualized_return.iloc[0]}")
     print(f"Sharpe Ratio: {logreg_sharpe_ratio.iloc[0]}")
     print(f"Maximum Drawdown: {logreg_max_drawdown.iloc[0]}")
-    '''
 
-    '''
     # Random Forest Classifier
     rf = RandomForestClassifier()
     rf.fit(X_train, y_train)
@@ -295,7 +258,6 @@ def main():
     print(f"Annualized Return: {rf_annualized_return.iloc[0]}")
     print(f"Sharpe Ratio: {rf_sharpe_ratio.iloc[0]}")
     print(f"Maximum Drawdown: {rf_max_drawdown.iloc[0]}")
-    '''
 
 if __name__ == "__main__":
     main()
