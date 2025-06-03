@@ -19,6 +19,7 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 import torch
 import torch.nn as nn
 
+
 def run_once(f):
     def wrapper(*args, **kwargs):
         if not wrapper.has_run:
@@ -122,7 +123,9 @@ def plot_data_pred(data, y_test, y_test_pred, test_rmse, fig_name, isSave):
     gs = fig.add_gridspec(4,1)
 
     ax1 = fig.add_subplot(gs[:3, 0])
-    ax1.plot(data['Date'][-len(y_test):], y_test, label='Price')
+    ax1.plot(data['Date'][-len(y_test):], data['Close'][-len(y_test):], label='Price Original')
+    ax1.plot(data['Date'][-len(y_test):], data['MA_50'][-len(y_test):], label='Price 50-day MA')
+    ax1.plot(data['Date'][-len(y_test):], data['MA_200'][-len(y_test):], label='Price 200-day MA')
     ax1.plot(data['Date'][-len(y_test_pred):], y_test_pred, label='Predicted Price')
     ax1.legend()
     plt.title('Price Prediction '+fig_name)
@@ -147,25 +150,98 @@ def plot_data_pred(data, y_test, y_test_pred, test_rmse, fig_name, isSave):
     # Show the png
     plt.show()
 
-def prepare_data(data, scaler):
+def ML_1I1O(data, scaler):
     # Normalize the datas
-    data = scaler.fit_transform(data[['Close']])
+    price_scaled = scaler['Price'].fit_transform(data[['MA_50']].dropna())
     seq_length = 30
-    data_sets = []
+    data_sets_price = []
     
-    for i in range(len(data)-seq_length):
-        data_sets.append(data[i:i+seq_length])
-    train_size = int(len(data_sets) * 0.8)
+    for i in range(len(price_scaled)-seq_length):
+        data_sets_price.append(price_scaled[i:i+seq_length])
+    train_size = int(len(data_sets_price) * 0.8)
     
-    data_sets = np.array(data_sets)
+    data_sets_price = np.array(data_sets_price)
     # Split the data into training and testing sets 
-    X_train_data = data_sets[:train_size, :-1, :]
-    y_train_data = data_sets[:train_size, -1, :]
-    X_test_data  = data_sets[train_size:, :-1, :]
-    y_test_data  = data_sets[train_size:, -1, :]
+    X_train_data = data_sets_price[:train_size, :-1, :]
+    y_train_data = data_sets_price[:train_size, -1, :]
+    X_test_data  = data_sets_price[train_size:, :-1, :]
+    y_test_data  = data_sets_price[train_size:, -1, :]
 
-    return X_train_data, y_train_data, X_test_data, y_test_data
+    X_train = torch.from_numpy(X_train_data).type(torch.Tensor).to(device)
+    y_train = torch.from_numpy(y_train_data).type(torch.Tensor).to(device)
+    X_test = torch.from_numpy(X_test_data).type(torch.Tensor).to(device)
+    y_test = torch.from_numpy(y_test_data).type(torch.Tensor).to(device)
 
+    model = PredictionModel(input_dim=1, hidden_dim=32, num_layers=2, output_dim=1).to(device)
+    criterion = nn.MSELoss()  # Binary Cross Entropy Loss
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.02)
+
+    num_epochs = 200
+
+    for epoch in range(num_epochs):
+        y_train_pred = model(X_train)
+        loss = criterion(y_train_pred, y_train)
+        if epoch%25 == 0:
+            print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
+    
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    model.eval()
+    y_test_pred = model(X_test)
+    return y_train_pred, y_train, y_test_pred, y_test
+
+def ML_2I1O(data, scaler):
+    price_scaled = scaler['Price'].fit_transform(data[['Close']].dropna())
+    vol_scaled   = scaler['Volatility'].fit_transform(data[['Volatility']].dropna())
+    seq_length = 30
+    data_sets_price, data_sets_vol = [], []
+
+    for i in range(len(vol_scaled) - seq_length):
+        data_sets_price.append(price_scaled[i:i+seq_length])   # MA_50 sequence
+        data_sets_vol.append(vol_scaled[i+seq_length-1])  # Volatility at last step
+    train_size = int(len(data_sets_price) * 0.8)
+
+    data_sets_price = np.array(data_sets_price)
+    data_sets_vol = np.array(data_sets_vol)
+
+    X_train_price_data = data_sets_price[:train_size, :-1, :]
+    X_train_vol_data   = data_sets_vol[:train_size, -1].reshape(-1, 1)
+    y_train_data  = data_sets_price[:train_size, -1, :]     
+
+    X_test_price_data  = data_sets_price[train_size:, :-1, :]
+    X_test_vol_data    = data_sets_vol[train_size:, -1].reshape(-1, 1)
+    y_test_data   = data_sets_price[train_size:, -1, :] 
+
+    X_train_price = torch.from_numpy(X_train_price_data).type(torch.Tensor).to(device)
+    X_train_vol = torch.from_numpy(X_train_vol_data).type(torch.Tensor).to(device)
+    y_train = torch.from_numpy(y_train_data).type(torch.Tensor).to(device)
+    X_test_price = torch.from_numpy(X_test_price_data).type(torch.Tensor).to(device)
+    X_test_vol = torch.from_numpy(X_test_vol_data).type(torch.Tensor).to(device)
+    y_test = torch.from_numpy(y_test_data).type(torch.Tensor).to(device)  
+
+    model = DualInputPredictionModel(price_input_dim=1, vol_input_dim=1, hidden_dim=32, num_layers=2, output_dim=1).to(device)
+    criterion = nn.MSELoss()  # Binary Cross Entropy Loss
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.02)
+
+    num_epochs = 200
+
+    # Training loop
+    for epoch in range(num_epochs):
+        model.train()
+        y_train_pred = model(X_train_price, X_train_vol)
+        loss = criterion(y_train_pred, y_train)
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        if epoch % 25 == 0:
+            print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
+
+    model.eval()
+    y_test_pred = model(X_test_price, X_test_vol)
+    return y_train_pred, y_train, y_test_pred, y_test
 
 class PredictionModel(nn.Module):
     def __init__(self, input_dim, hidden_dim, num_layers, output_dim):
@@ -185,9 +261,32 @@ class PredictionModel(nn.Module):
         out = self.fc(out[:, -1, :])
 
         return out
+    
+class DualInputPredictionModel(nn.Module):
+    def __init__(self, price_input_dim, vol_input_dim, hidden_dim, num_layers, output_dim):
+        super(DualInputPredictionModel, self).__init__()
+
+        self.lstm_price = nn.LSTM(price_input_dim, hidden_dim, num_layers, batch_first=True)
+        self.fc_vol     = nn.Linear(vol_input_dim, hidden_dim)
+        self.fc_out     = nn.Linear(hidden_dim * 2, output_dim)
+
+    def forward(self, price_input, vol_input):
+        h0_price = torch.zeros(self.lstm_price.num_layers, price_input.size(0), self.lstm_price.hidden_size, device=price_input.device)
+        c0_price = torch.zeros(self.lstm_price.num_layers, price_input.size(0), self.lstm_price.hidden_size, device=price_input.device)
+
+        lstm_out, _ = self.lstm_price(price_input, (h0_price, c0_price))
+        price_feat = lstm_out[:, -1, :]  # shape: (batch, hidden)
+
+        vol_feat = self.fc_vol(vol_input)  # shape: (batch, hidden)
+
+        combined = torch.cat((price_feat, vol_feat), dim=1)  # shape: (batch, hidden * 2)
+        out = self.fc_out(combined)
+        return out
 
 def main():
     global device 
+    print(torch.cuda.is_available())
+    time.sleep(2)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print('Device:', device)
@@ -220,37 +319,20 @@ def main():
     plot_data_vol(data, ticker, True)
 
     # Prepare the training datas and test datas
-    scaler = StandardScaler()
+    scaler_price = StandardScaler()
+    scaler_vol   = StandardScaler()
+    scaler = {
+        'Price':scaler_price, 
+        'Volatility': scaler_vol
+        }
 
-    X_train_data, y_train_data, X_test_data, y_test_data = prepare_data(data, scaler)
-    X_train = torch.from_numpy(X_train_data).type(torch.Tensor).to(device)
-    y_train = torch.from_numpy(y_train_data).type(torch.Tensor).to(device)
-    X_test = torch.from_numpy(X_test_data).type(torch.Tensor).to(device)
-    y_test = torch.from_numpy(y_test_data).type(torch.Tensor).to(device)
-
-    model = PredictionModel(input_dim=1, hidden_dim=32, num_layers=2, output_dim=1).to(device)
-    criterion = nn.MSELoss()  # Binary Cross Entropy Loss
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.02)
-
-    num_epochs = 200
-
-    for i in range(num_epochs):
-        y_train_pred = model(X_train)
-        loss = criterion(y_train_pred, y_train)
-        if i%25 == 0:
-            print('epoch: ', i, 'loss: ', loss.item())
+    # y_train_pred, y_train, y_test_pred, y_test = ML_1I1O(data=data, scaler=scaler) # MA_50 as one single input
+    y_train_pred, y_train, y_test_pred, y_test = ML_2I1O(data=data, scaler=scaler) # MA_50 and Volatility as two input
     
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-    model.eval()
-    y_test_pred = model(X_test)
-    
-    y_train_pred = scaler.inverse_transform(y_train_pred.detach().cpu().numpy())
-    y_train = scaler.inverse_transform(y_train.detach().cpu().numpy())
-    y_test_pred = scaler.inverse_transform(y_test_pred.detach().cpu().numpy())
-    y_test = scaler.inverse_transform(y_test.detach().cpu().numpy())
+    y_train_pred = scaler['Price'].inverse_transform(y_train_pred.detach().cpu().numpy())
+    y_train = scaler['Price'].inverse_transform(y_train.detach().cpu().numpy())
+    y_test_pred = scaler['Price'].inverse_transform(y_test_pred.detach().cpu().numpy())
+    y_test = scaler['Price'].inverse_transform(y_test.detach().cpu().numpy())
 
     train_rmse = root_mean_squared_error(y_train[:, 0], y_train_pred[:, 0])
     test_rmse = root_mean_squared_error(y_test[:, 0], y_test_pred[:, 0])
