@@ -58,8 +58,9 @@ def download_fear_and_greed_data(start_date, end_date):
         ]
     return data_fear_and_greed
 
-def evaluate_data(close_df, ticker):
+def evaluate_data(close_df, ticker, start_date):
     data = pd.DataFrame()
+
     # Create the trade date
     data['Date'] = close_df['Date']
 
@@ -103,7 +104,7 @@ def evaluate_data(close_df, ticker):
     slope = reg.coef_[0][0]
     return data, momentum_20.iloc[-1], MACD.iloc[-1], ROC_20.iloc[-1], RSI.iloc[-1], slope
 
-def evaluate_fear_and_greed_data(fear_and_greed_df):
+def evaluate_fear_and_greed_data(fear_and_greed_df, start_date):
     fear_and_greed_data = pd.DataFrame()
     # Create the trade date
     fear_and_greed_data['Date'] = fear_and_greed_df['Date']
@@ -202,7 +203,7 @@ def plot_data_pred(data, y_test, y_test_pred, test_rmse, fig_name, isSave):
 
 def ML_1I1O(data, scaler):
     # Normalize the datas
-    price_scaled = scaler['Price'].fit_transform(data[['MA_50']].dropna())
+    price_scaled = scaler['Price'].fit_transform(data[['Close']].dropna())
     seq_length = 30
     data_sets_price = []
     
@@ -243,48 +244,87 @@ def ML_1I1O(data, scaler):
     return y_train_pred, y_train, y_test_pred, y_test
 
 def ML_2I1O(data, fear_and_greed_data, scaler):
-    price_scaled = scaler['Price'].fit_transform(data[['Close']].dropna())
-    vol_scaled   = scaler['Volatility'].fit_transform(data[['Volatility']].dropna())
-    fear_index_scaled   = scaler['Volatility'].fit_transform(data[['Volatility']].dropna())
-    seq_length = 30
-    data_sets_price, data_sets_vol, data_sets_fear_index = [], [], []
+    def hybrid_loss(y_pred, y_true, lagged_fear):
+        # Reshape all tensors to **1D vectors
+        y_pred = y_pred.view(-1)
+        y_true = y_true.view(-1)
+        lagged_fear = lagged_fear.view(-1)
 
-    for i in range(len(vol_scaled) - seq_length):
+        # MSE for price value
+        mse = nn.functional.mse_loss(y_pred, y_true)
+
+        # Direction loss (is sign correct?)
+        y_true_shift = torch.roll(y_true, 1)
+        y_pred_shift = torch.roll(y_pred, 1)
+        # +1 if price increased
+        # -1 if price decreased
+        # 0 if unchanged
+        dir_true = torch.sign(y_true - y_true_shift)
+        dir_pred = torch.sign(y_pred - y_pred_shift)
+
+        wrong_dir = (dir_true != dir_pred).float()
+        wrong_dir[0] = 0.0  # ignore shift artifact
+
+        # 3. Weight direction penalty by fear index (normalized)
+        fear_weight = lagged_fear / 100.0
+        dir_loss = torch.mean(wrong_dir * fear_weight)
+
+        return mse + 0.3 * dir_loss  # 0.3 is tunable
+    
+    def criterion(y_pred, y_true, fear_input):
+        return hybrid_loss(y_pred, y_true, fear_input)
+
+    # filter_date = max(data['Date'].loc[0], fear_and_greed_data['Date'].loc[0])
+    filter_date = '2018-04-17' # there are some missing datas before 04.17
+    
+    data = data[data['Date'] >= filter_date].reset_index(drop=True)
+
+    fear_and_greed_data["Index"] = fear_and_greed_data["Index"].shift(1) # Lag the Fear Index Input
+    fear_and_greed_data = fear_and_greed_data[fear_and_greed_data['Date'] >= filter_date].reset_index(drop=True)
+
+    price_scaled = scaler['Price'].fit_transform(data[['Close']].dropna())
+    # vol_scaled   = scaler['Volatility'].fit_transform(data[['Volatility']].dropna())
+    fear_index_scaled   = scaler['Fear and Greed'].fit_transform(fear_and_greed_data[['Index']].dropna())
+    seq_length = 30
+    data_sets_price, data_sets_fear_index = [], []
+
+    for i in range(len(price_scaled) - seq_length):
         data_sets_price.append(price_scaled[i:i+seq_length])   # MA_50 sequence
-        data_sets_vol.append(vol_scaled[i+seq_length-1])  # Volatility at last step
+        # data_sets_vol.append(vol_scaled[i+seq_length-1])  # Volatility at last step
         data_sets_fear_index.append(fear_index_scaled[i+seq_length-1])  # Volatility at last step
     train_size = int(len(data_sets_price) * 0.8)
 
     data_sets_price = np.array(data_sets_price)
-    data_sets_vol = np.array(data_sets_vol)
+    # data_sets_vol = np.array(data_sets_vol)
     data_sets_fear_index = np.array(data_sets_fear_index)
 
     X_train_price_data = data_sets_price[:train_size, :-1, :]
-    X_train_vol_data   = data_sets_fear_index[:train_size, -1].reshape(-1, 1)
+    X_train_fear_index_data   = data_sets_fear_index[:train_size, -1].reshape(-1, 1)
     y_train_data  = data_sets_price[:train_size, -1, :]     
 
     X_test_price_data  = data_sets_price[train_size:, :-1, :]
-    X_test_vol_data    = data_sets_fear_index[train_size:, -1].reshape(-1, 1)
+    X_test_fear_index_data    = data_sets_fear_index[train_size:, -1].reshape(-1, 1)
     y_test_data   = data_sets_price[train_size:, -1, :] 
 
     X_train_price = torch.from_numpy(X_train_price_data).type(torch.Tensor).to(device)
-    X_train_vol = torch.from_numpy(X_train_vol_data).type(torch.Tensor).to(device)
+    X_train_fear_index = torch.from_numpy(X_train_fear_index_data).type(torch.Tensor).to(device)
     y_train = torch.from_numpy(y_train_data).type(torch.Tensor).to(device)
     X_test_price = torch.from_numpy(X_test_price_data).type(torch.Tensor).to(device)
-    X_test_vol = torch.from_numpy(X_test_vol_data).type(torch.Tensor).to(device)
+    X_test_fear_index = torch.from_numpy(X_test_fear_index_data).type(torch.Tensor).to(device)
     y_test = torch.from_numpy(y_test_data).type(torch.Tensor).to(device)  
 
     model = DualInputPredictionModel(first_input_dim=1, second_input_dim=1, hidden_dim=32, num_layers=2, output_dim=1).to(device)
-    criterion = nn.MSELoss()  # Binary Cross Entropy Loss
+    # criterion = nn.MSELoss()  # Binary Cross Entropy Loss
     optimizer = torch.optim.Adam(model.parameters(), lr=0.02)
 
-    num_epochs = 1000
+    num_epochs = 500
 
     # Training loop
     for epoch in range(num_epochs):
         model.train()
-        y_train_pred = model(X_train_price, X_train_vol)
-        loss = criterion(y_train_pred, y_train)
+        y_train_pred = model(X_train_price, X_train_fear_index)
+        # loss = criterion(y_train_pred, y_train)
+        loss = criterion(y_train_pred, y_train, X_train_fear_index)
 
         optimizer.zero_grad()
         loss.backward()
@@ -293,7 +333,7 @@ def ML_2I1O(data, fear_and_greed_data, scaler):
             print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
 
     model.eval()
-    y_test_pred = model(X_test_price, X_test_vol)
+    y_test_pred = model(X_test_price, X_test_fear_index)
     return y_train_pred, y_train, y_test_pred, y_test
 
 class PredictionModel(nn.Module):
@@ -375,13 +415,13 @@ def main():
         fear_and_greed_df = pd.read_excel(data_fear_and_greed_path)
 
     # Evaluate the datas from dataframe
-    data, momentum_20, MACD, ROC_20, RSI, slope = evaluate_data(close_df, ticker)
+    data, momentum_20, MACD, ROC_20, RSI, slope = evaluate_data(close_df, ticker, start_date)
     print(f"Quantitative values: \nMomentum={momentum_20}, \nMACD={MACD}, \nROC_20={ROC_20}, \nRSI={RSI}, \nslope={slope}")
     # Plot the train data and test data
     plot_data_ave(data, ticker, True)
     plot_data_vol(data, ticker, True)
 
-    fear_and_greed_data = evaluate_fear_and_greed_data(fear_and_greed_df)
+    fear_and_greed_data = evaluate_fear_and_greed_data(fear_and_greed_df, start_date)
     plot_data_fear_and_greed(fear_and_greed_data, ticker, True)
 
     # Prepare the training datas and test datas
