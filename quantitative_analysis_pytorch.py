@@ -13,7 +13,7 @@ import sys
 from numba.cuda.simulator.cudadrv.nvvm import is_available
 from sklearn.linear_model import LogisticRegression, LinearRegression
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, root_mean_squared_error
 
 import torch
@@ -79,13 +79,16 @@ def evaluate_data(close_df, ticker, start_date):
 
     # Momentum last 20 days
     momentum_20 = data["Close"] - data["Close"].shift(20)
+    data['momentum_20'] = momentum_20
     # MACD (Moving Average Convergence Divergence)
     # Positive MACD → upward momentum
     # Negative MACD → downward momentum
     MACD = data["EMA_12"] - data["EMA_26"]
+    data['MACD'] = MACD
     # Rate of Change (ROC)
     ROC_20 = ((data["Close"] - data["Close"].shift(20)) / data["Close"].shift(20)) * 100
-    
+    data['ROC_20'] = ROC_20
+
     # Relative Strength Index (RSI) 
     # RSI > 70: Overbought (may indicate reversal) 
     # RSI < 30: Oversold
@@ -96,13 +99,15 @@ def evaluate_data(close_df, ticker, start_date):
     avg_loss = loss.rolling(window=14).mean()
     rs = avg_gain / avg_loss
     RSI = 100 - (100 / (1 + rs))
+    data['RSI'] = RSI
 
     # Linear Regression Slope (last 30 days)
     X = np.arange(30).reshape(-1, 1)
     y = data["Close"].tail(30).values.reshape(-1, 1)
     reg = LinearRegression().fit(X, y)
     slope = reg.coef_[0][0]
-    return data, momentum_20.iloc[-1], MACD.iloc[-1], ROC_20.iloc[-1], RSI.iloc[-1], slope
+    data['slope'] = slope
+    return data
 
 def evaluate_fear_and_greed_data(fear_and_greed_df, start_date):
     fear_and_greed_data = pd.DataFrame()
@@ -149,6 +154,22 @@ def plot_data_vol(data, fig_name, isSave):
     # Save the png 
     if isSave is True:
         fig_file = fig_name+'_vol.png'
+        fig_path = os.path.join(sys.path[0], fig_file)
+        plt.savefig(fig_path, format='png', dpi=1200)
+    # Show the png
+    plt.show()
+
+
+def plot_data_rsi(data, fig_name, isSave):
+    plt.figure(figsize=(12, 6))
+    plt.plot(data['Date'], data['RSI'])
+    plt.title('RSI ' + fig_name)
+    plt.xlabel('Date')
+    plt.ylabel('RSI')
+
+    # Save the png
+    if isSave is True:
+        fig_file = fig_name + '_rsi.png'
         fig_path = os.path.join(sys.path[0], fig_file)
         plt.savefig(fig_path, format='png', dpi=1200)
     # Show the png
@@ -243,12 +264,13 @@ def ML_1I1O(data, scaler):
     y_test_pred = model(X_test)
     return y_train_pred, y_train, y_test_pred, y_test
 
-def ML_2I1O(data, fear_and_greed_data, scaler):
-    def hybrid_loss(y_pred, y_true, lagged_fear):
+def ML_MI1O(data, fear_and_greed_data, scaler):
+    def hybrid_loss(y_pred, y_true, lagged_fear, lagged_rsi):
         # Reshape all tensors to **1D vectors
         y_pred = y_pred.view(-1)
         y_true = y_true.view(-1)
         lagged_fear = lagged_fear.view(-1)
+        lagged_rsi = lagged_rsi.view(-1)
 
         # MSE for price value
         mse = nn.functional.mse_loss(y_pred, y_true)
@@ -265,66 +287,95 @@ def ML_2I1O(data, fear_and_greed_data, scaler):
         wrong_dir = (dir_true != dir_pred).float()
         wrong_dir[0] = 0.0  # ignore shift artifact
 
-        # 3. Weight direction penalty by fear index (normalized)
+        # Weight direction penalty by fear index (normalized)
         fear_weight = lagged_fear / 100.0
         dir_loss = torch.mean(wrong_dir * fear_weight)
 
-        return mse + 0.3 * dir_loss  # 0.3 is tunable
+        # Weight direction penalty by RSI
+        # Determine overbought and oversold zones (scaled RSI)
+        high_rsi = (lagged_rsi > 0.7).float()   # Overbought
+        low_rsi  = (lagged_rsi < 0.3).float()   # Oversold
+
+        # Detect price direction
+        price_increase = (y_pred - y_pred_shift > 0).float()
+        price_decrease = (y_pred - y_pred_shift < 0).float()
+
+        # Apply penalties:
+        # - If RSI is high and price increases → penalize
+        # - If RSI is low and price decreases → penalize
+        penalty_high = high_rsi * price_increase
+        penalty_low  = low_rsi  * price_decrease
+
+        # Combine both penalties
+        rsi_penalty = penalty_high + penalty_low
+        rsi_loss = rsi_penalty.mean()
+
+        return mse + 0.3 * dir_loss  + 0.2 * rsi_loss 
     
-    def criterion(y_pred, y_true, fear_input):
-        return hybrid_loss(y_pred, y_true, fear_input)
+    def criterion(y_pred, y_true, fear_input, rsi_input):
+        return hybrid_loss(y_pred, y_true, fear_input, rsi_input)
 
     # filter_date = max(data['Date'].loc[0], fear_and_greed_data['Date'].loc[0])
     filter_date = '2018-04-17' # there are some missing datas before 04.17
     
-    data = data[data['Date'] >= filter_date].reset_index(drop=True)
+    data["RSI"] = data["RSI"].shift(3) # Lag the RSI by 3
 
-    fear_and_greed_data["Index"] = fear_and_greed_data["Index"].shift(1) # Lag the Fear Index Input
+    data = data[data['Date'] >= filter_date].reset_index(drop=True)
+    
+    fear_and_greed_data["Index"] = fear_and_greed_data["Index"].shift(3) # Lag the Fear Index Input by 3
     fear_and_greed_data = fear_and_greed_data[fear_and_greed_data['Date'] >= filter_date].reset_index(drop=True)
 
     price_scaled = scaler['Price'].fit_transform(data[['Close']].dropna())
-    # vol_scaled   = scaler['Volatility'].fit_transform(data[['Volatility']].dropna())
-    fear_index_scaled   = scaler['Fear and Greed'].fit_transform(fear_and_greed_data[['Index']].dropna())
+    rsi_scaled = scaler['RSI'].fit_transform(data[['RSI']].dropna())
+    fear_index_scaled = scaler['Fear and Greed'].fit_transform(fear_and_greed_data[['Index']].dropna())
     seq_length = 30
-    data_sets_price, data_sets_fear_index = [], []
+    data_sets_price, data_sets_fear_index, data_sets_rsi = [], [], []
 
     for i in range(len(price_scaled) - seq_length):
         data_sets_price.append(price_scaled[i:i+seq_length])   # MA_50 sequence
-        # data_sets_vol.append(vol_scaled[i+seq_length-1])  # Volatility at last step
+        data_sets_rsi.append(rsi_scaled[i + seq_length - 1])  # RSI at last step
         data_sets_fear_index.append(fear_index_scaled[i+seq_length-1])  # Volatility at last step
     train_size = int(len(data_sets_price) * 0.8)
 
     data_sets_price = np.array(data_sets_price)
-    # data_sets_vol = np.array(data_sets_vol)
+    data_sets_rsi = np.array(data_sets_rsi)
     data_sets_fear_index = np.array(data_sets_fear_index)
 
     X_train_price_data = data_sets_price[:train_size, :-1, :]
+    X_train_rsi_data = data_sets_rsi[:train_size].reshape(-1, 1)
     X_train_fear_index_data   = data_sets_fear_index[:train_size, -1].reshape(-1, 1)
     y_train_data  = data_sets_price[:train_size, -1, :]     
 
-    X_test_price_data  = data_sets_price[train_size:, :-1, :]
-    X_test_fear_index_data    = data_sets_fear_index[train_size:, -1].reshape(-1, 1)
-    y_test_data   = data_sets_price[train_size:, -1, :] 
-
     X_train_price = torch.from_numpy(X_train_price_data).type(torch.Tensor).to(device)
+    X_train_rsi = torch.from_numpy(X_train_rsi_data).type(torch.Tensor).to(device)
     X_train_fear_index = torch.from_numpy(X_train_fear_index_data).type(torch.Tensor).to(device)
     y_train = torch.from_numpy(y_train_data).type(torch.Tensor).to(device)
+    
+    y_test_data   = data_sets_price[train_size:, -1, :]
+    y_test = torch.from_numpy(y_test_data).type(torch.Tensor).to(device)  
+    
+    X_test_price_data  = data_sets_price[train_size:, :-1, :]
+    X_test_rsi_data  = data_sets_rsi[train_size:].reshape(-1, 1)
+    X_test_fear_index_data   = data_sets_fear_index[train_size:, -1].reshape(-1, 1)
     X_test_price = torch.from_numpy(X_test_price_data).type(torch.Tensor).to(device)
     X_test_fear_index = torch.from_numpy(X_test_fear_index_data).type(torch.Tensor).to(device)
-    y_test = torch.from_numpy(y_test_data).type(torch.Tensor).to(device)  
+    X_test_rsi = torch.from_numpy(X_test_rsi_data).type(torch.Tensor).to(device)
+     
 
-    model = DualInputPredictionModel(first_input_dim=1, second_input_dim=1, hidden_dim=32, num_layers=2, output_dim=1).to(device)
+    model = MultiInputPredictionModel(price_input_dim=1, aux_input_dim=2, hidden_dim=64, num_layers=2, output_dim=1).to(device)
+    # model = DualInputPredictionModel(first_input_dim=1, second_input_dim=1, hidden_dim=32, num_layers=2, output_dim=1).to(device)
+    # model = PredictionModel(input_dim=1, hidden_dim=32, num_layers=2, output_dim=1).to(device)
     # criterion = nn.MSELoss()  # Binary Cross Entropy Loss
     optimizer = torch.optim.Adam(model.parameters(), lr=0.02)
 
-    num_epochs = 500
+    num_epochs = 200
 
     # Training loop
     for epoch in range(num_epochs):
         model.train()
-        y_train_pred = model(X_train_price, X_train_fear_index)
+        y_train_pred = model(X_train_price, torch.cat([X_train_rsi, X_train_fear_index],1))
         # loss = criterion(y_train_pred, y_train)
-        loss = criterion(y_train_pred, y_train, X_train_fear_index)
+        loss = criterion(y_train_pred, y_train, X_train_fear_index, X_train_rsi)
 
         optimizer.zero_grad()
         loss.backward()
@@ -333,7 +384,7 @@ def ML_2I1O(data, fear_and_greed_data, scaler):
             print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
 
     model.eval()
-    y_test_pred = model(X_test_price, X_test_fear_index)
+    y_test_pred = model(X_test_price, torch.cat([X_test_fear_index, X_test_rsi],1))
     return y_train_pred, y_train, y_test_pred, y_test
 
 class PredictionModel(nn.Module):
@@ -354,25 +405,34 @@ class PredictionModel(nn.Module):
         out = self.fc(out[:, -1, :])
 
         return out
-    
-class DualInputPredictionModel(nn.Module):
-    def __init__(self, first_input_dim, second_input_dim, hidden_dim, num_layers, output_dim):
-        super(DualInputPredictionModel, self).__init__()
 
-        self.lstm_price = nn.LSTM(first_input_dim, hidden_dim, num_layers, batch_first=True)
-        self.fc_vol     = nn.Linear(second_input_dim, hidden_dim)
+class MultiInputPredictionModel(nn.Module):
+    def __init__(self, price_input_dim, aux_input_dim, hidden_dim, num_layers, output_dim):
+        super(MultiInputPredictionModel, self).__init__()
+
+        # LSTM for price sequence
+        self.lstm_price = nn.LSTM(price_input_dim, hidden_dim, num_layers, batch_first=True)
+
+        # Linear layer for auxiliary inputs (RSI and Fear Index)
+        self.fc_aux     = nn.Linear(aux_input_dim, hidden_dim)
+
+        # Output layer after combining both paths
         self.fc_out     = nn.Linear(hidden_dim * 2, output_dim)
 
-    def forward(self, first_input, second_input):
-        h0_price = torch.zeros(self.lstm_price.num_layers, first_input.size(0), self.lstm_price.hidden_size, device=first_input.device)
-        c0_price = torch.zeros(self.lstm_price.num_layers, first_input.size(0), self.lstm_price.hidden_size, device=first_input.device)
+    def forward(self, price_input, aux_input):
+        # Initialize LSTM hidden states
+        h0 = torch.zeros(self.lstm_price.num_layers, price_input.size(0), self.lstm_price.hidden_size, device=price_input.device)
+        c0 = torch.zeros(self.lstm_price.num_layers, price_input.size(0), self.lstm_price.hidden_size, device=price_input.device)
 
-        lstm_out, _ = self.lstm_price(first_input, (h0_price, c0_price))
-        first_feat = lstm_out[:, -1, :]  # shape: (batch, hidden)
+        # LSTM forward pass
+        lstm_out, _ = self.lstm_price(price_input, (h0, c0))
+        price_feat = lstm_out[:, -1, :]  # Last time step
 
-        second_feat = self.fc_vol(second_input)  # shape: (batch, hidden)
+        # Process RSI and Fear index
+        aux_feat = self.fc_aux(aux_input)
 
-        combined = torch.cat((first_feat, second_feat), dim=1)  # shape: (batch, hidden * 2)
+        # Combine and output
+        combined = torch.cat((price_feat, aux_feat), dim=1)
         out = self.fc_out(combined)
         return out
 
@@ -415,27 +475,32 @@ def main():
         fear_and_greed_df = pd.read_excel(data_fear_and_greed_path)
 
     # Evaluate the datas from dataframe
-    data, momentum_20, MACD, ROC_20, RSI, slope = evaluate_data(close_df, ticker, start_date)
-    print(f"Quantitative values: \nMomentum={momentum_20}, \nMACD={MACD}, \nROC_20={ROC_20}, \nRSI={RSI}, \nslope={slope}")
+    data = evaluate_data(close_df, ticker, start_date)
+    print(
+        f"Quantitative values: \nMomentum={data['momentum_20'].iloc[-1]}, \nMACD={data['MACD'].iloc[-1]}, \nROC_20={data['ROC_20'].iloc[-1]}, \nRSI={data['RSI'].iloc[-1]}, \nslope={data['slope'].iloc[-1]}"
+        )
     # Plot the train data and test data
-    plot_data_ave(data, ticker, True)
-    plot_data_vol(data, ticker, True)
+    plot_data_ave(data, ticker, False)
+    plot_data_vol(data, ticker, False)
+    plot_data_rsi(data, ticker, False)
 
     fear_and_greed_data = evaluate_fear_and_greed_data(fear_and_greed_df, start_date)
-    plot_data_fear_and_greed(fear_and_greed_data, ticker, True)
+    plot_data_fear_and_greed(fear_and_greed_data, ticker, False)
 
     # Prepare the training datas and test datas
     scaler_price = StandardScaler()
     scaler_vol   = StandardScaler()
-    scaler_fear_and_greed  = StandardScaler()
+    scaler_fear_and_greed  = MinMaxScaler(feature_range=(0, 1))
+    scaler_RSI = MinMaxScaler(feature_range=(0, 1))
     scaler = {
         'Price':scaler_price, 
         'Volatility': scaler_vol,
-        'Fear and Greed': scaler_fear_and_greed
+        'Fear and Greed': scaler_fear_and_greed,
+        'RSI': scaler_RSI
         }
 
-    # y_train_pred, y_train, y_test_pred, y_test = ML_1I1O(data=data, scaler=scaler) # MA_50 as one single input
-    y_train_pred, y_train, y_test_pred, y_test = ML_2I1O(data=data, fear_and_greed_data=fear_and_greed_data, scaler=scaler) # MA_50 and Fear Index as two input
+    # y_train_pred, y_train, y_test_pred, y_test = ML_1I1O(data=data, scaler=scaler) # Price as one single input
+    y_train_pred, y_train, y_test_pred, y_test = ML_MI1O(data=data, fear_and_greed_data=fear_and_greed_data, scaler=scaler) # Price, Fear Index and RSI as three input
     
     y_train_pred = scaler['Price'].inverse_transform(y_train_pred.detach().cpu().numpy())
     y_train = scaler['Price'].inverse_transform(y_train.detach().cpu().numpy())
