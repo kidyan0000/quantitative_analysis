@@ -126,71 +126,25 @@ def evaluate_fear_and_greed_data(fear_and_greed_df, start_date):
     
     return fear_and_greed_data
 
-def plot_data_ave(data, fig_name, isSave):
+def plot_data_price(data, ticker, isSave):
     plt.figure(figsize=(12, 6))
     plt.plot(data['Date'], data['Close'], label='Close')
     plt.plot(data['Date'], data['MA_50'], label='50-day MA')
     plt.plot(data['Date'], data['MA_200'], label='200-day MA')
-    plt.title('Moving Averages '+fig_name)
+    plt.title('Moving Averages '+ticker)
     plt.xlabel('Date')
     plt.ylabel('Price')
     plt.legend()
     
     # Save the png 
     if isSave is True:
-        fig_file = fig_name+'_ave.png'
+        fig_file = ticker+'_ave.png'
         fig_path = os.path.join(sys.path[0], fig_file)
         plt.savefig(fig_path, format='png', dpi=1200)
     # Show the png
     plt.show()
 
-def plot_data_vol(data, fig_name, isSave):
-    plt.figure(figsize=(12, 6))
-    plt.plot(data['Date'], data['Volatility'])
-    plt.title('Volatility '+fig_name)
-    plt.xlabel('Date')
-    plt.ylabel('Volatility')
-    
-    # Save the png 
-    if isSave is True:
-        fig_file = fig_name+'_vol.png'
-        fig_path = os.path.join(sys.path[0], fig_file)
-        plt.savefig(fig_path, format='png', dpi=1200)
-    # Show the png
-    plt.show()
-
-
-def plot_data_rsi(data, fig_name, isSave):
-    plt.figure(figsize=(12, 6))
-    plt.plot(data['Date'], data['RSI'])
-    plt.title('RSI ' + fig_name)
-    plt.xlabel('Date')
-    plt.ylabel('RSI')
-
-    # Save the png
-    if isSave is True:
-        fig_file = fig_name + '_rsi.png'
-        fig_path = os.path.join(sys.path[0], fig_file)
-        plt.savefig(fig_path, format='png', dpi=1200)
-    # Show the png
-    plt.show()
-
-def plot_data_fear_and_greed(fear_and_greed_data, fig_name, isSave):
-    plt.figure(figsize=(12, 6))
-    plt.plot(fear_and_greed_data['Date'], fear_and_greed_data['Index'])
-    plt.title('Fear and Greed '+fig_name)
-    plt.xlabel('Date')
-    plt.ylabel('Fear and Greed')
-    
-    # Save the png 
-    if isSave is True:
-        fig_file = fig_name+'_fear_and_greed.png'
-        fig_path = os.path.join(sys.path[0], fig_file)
-        plt.savefig(fig_path, format='png', dpi=1200)
-    # Show the png
-    plt.show()
-
-def plot_data_pred(data, y_test, y_test_pred, test_rmse, fig_name, isSave):
+def plot_data_pred(data, y_test, y_test_pred, test_rmse, ticker, isSave):
     fig = plt.figure(figsize=(12, 10))
     gs = fig.add_gridspec(4,1)
 
@@ -200,7 +154,7 @@ def plot_data_pred(data, y_test, y_test_pred, test_rmse, fig_name, isSave):
     ax1.plot(data['Date'][-len(y_test):], data['MA_200'][-len(y_test):], label='Price 200-day MA')
     ax1.plot(data['Date'][-len(y_test_pred):], y_test_pred, label='Predicted Price')
     ax1.legend()
-    plt.title('Price Prediction '+fig_name)
+    plt.title('Price Prediction '+ticker)
     plt.xlabel('Date')
     plt.ylabel('Price')
 
@@ -208,7 +162,7 @@ def plot_data_pred(data, y_test, y_test_pred, test_rmse, fig_name, isSave):
     ax2.axhline(test_rmse, color='blue', linestyle='--', label='RMSE')
     ax2.plot(data['Date'][-len(y_test):], abs(y_test_pred-y_test), color='red', label='Price Error (abs)')
     ax2.legend()
-    plt.title('Price Prediction Error '+fig_name)
+    plt.title('Price Prediction Error '+ticker)
     plt.xlabel('Date')
     plt.ylabel('Price Error')
 
@@ -216,7 +170,22 @@ def plot_data_pred(data, y_test, y_test_pred, test_rmse, fig_name, isSave):
     
     # Save the png 
     if isSave is True:
-        fig_file = fig_name+'_pred.png'
+        fig_file = ticker+'_pred.png'
+        fig_path = os.path.join(sys.path[0], fig_file)
+        plt.savefig(fig_path, format='png', dpi=1200)
+    # Show the png
+    plt.show()
+
+def plot_data(data, key, ticker, isSave):
+    plt.figure(figsize=(12, 6))
+    plt.plot(data['Date'], data[key])
+    plt.title(key+' '+ticker)
+    plt.xlabel('Date')
+    plt.ylabel(key)
+    
+    # Save the png 
+    if isSave is True:
+        fig_file = ticker+'_'+key+'.png'
         fig_path = os.path.join(sys.path[0], fig_file)
         plt.savefig(fig_path, format='png', dpi=1200)
     # Show the png
@@ -236,8 +205,8 @@ def ML_1I1O(data, scaler):
     # Split the data into training and testing sets 
     X_train_data = data_sets_price[:train_size, :-1, :]
     y_train_data = data_sets_price[:train_size, -1, :]
-    X_test_data  = data_sets_price[train_size:, :-1, :]
-    y_test_data  = data_sets_price[train_size:, -1, :]
+    X_test_data  = data_sets_price[train_size:train_size+seq_length, :-1, :]
+    y_test_data  = data_sets_price[train_size:train_size+seq_length, -1, :]
 
     X_train = torch.from_numpy(X_train_data).type(torch.Tensor).to(device)
     y_train = torch.from_numpy(y_train_data).type(torch.Tensor).to(device)
@@ -266,62 +235,70 @@ def ML_1I1O(data, scaler):
 
 def ML_MI1O(data, fear_and_greed_data, scaler):
     def hybrid_loss(y_pred, y_true, lagged_fear, lagged_rsi, lagged_macd):
-        # Reshape all tensors to **1D vectors
-        y_pred = y_pred.view(-1)
-        y_true = y_true.view(-1)
-        lagged_fear = lagged_fear.view(-1)
-        lagged_rsi = lagged_rsi.view(-1)
-        lagged_macd = lagged_rsi.view(-1)
+        # y_pred, y_true: [batch_size, 10]
+        # lagged inputs: [batch_size, 1]
 
-        # MSE for price value
+        # Main MSE loss across all 10 days
         mse = nn.functional.mse_loss(y_pred, y_true)
 
-        # Direction loss (is sign correct?)
-        y_true_shift = torch.roll(y_true, 1)
-        y_pred_shift = torch.roll(y_pred, 1)
-        # +1 if price increased
-        # -1 if price decreased
-        # 0 if unchanged
-        dir_true = torch.sign(y_true - y_true_shift)
-        dir_pred = torch.sign(y_pred - y_pred_shift)
+        # Directional Loss
+        # Compute direction using day 10 minus day 1
+        dir_true = torch.sign(y_true[:, -1] - y_true[:, 0])
+        dir_pred = torch.sign(y_pred[:, -1] - y_pred[:, 0])
         wrong_dir = (dir_true != dir_pred).float()
-        wrong_dir[0] = 0.0  # ignore shift artifact
-        # Weight direction penalty by fear index (normalized)
-        fear_weight = lagged_fear / 100.0
+        
+        # Fear-based direction penalty
+        fear_weight = lagged_fear.view(-1) / 100.0  # Normalize
         dir_loss = torch.mean(wrong_dir * fear_weight)
 
-        # Detect price direction
-        price_increase = (y_pred - y_pred_shift > 0).float()
-        price_decrease = (y_pred - y_pred_shift < 0).float()
+        # RSI Penalty
+        # Assume RSI is constant across the 10 days
+        high_rsi = (lagged_rsi.view(-1) > 0.7).float()
+        low_rsi = (lagged_rsi.view(-1) < 0.3).float()
+        
+        price_diff = y_pred[:, -1] - y_pred[:, 0]  # price direction
+        price_increase = (price_diff > 0).float()
+        price_decrease = (price_diff < 0).float()
 
-        # Weight direction penalty by RSI
-        # Determine overbought and oversold zones (scaled RSI)
-        high_rsi = (lagged_rsi > 0.7).float()   # Overbought
-        low_rsi  = (lagged_rsi < 0.3).float()   # Oversold
-        # Apply penalties:
-        # - If RSI is high and price increases → penalize
-        # - If RSI is low and price decreases → penalize
         penalty_high = high_rsi * price_increase
         penalty_low  = low_rsi  * price_decrease
-        # Combine both penalties
-        rsi_penalty = penalty_high + penalty_low
-        rsi_loss = rsi_penalty.mean()
+        rsi_loss = (penalty_high + penalty_low).mean()
 
-        # --- MACD Penalty ---
-        macd_positive = (lagged_macd > 0).float()
-        macd_negative = (lagged_macd < 0).float()
-        penalty_macd = macd_positive * price_decrease + macd_negative * price_increase
+        # MACD Penalty
+        macd_pos = (lagged_macd.view(-1) > 0).float()
+        macd_neg = (lagged_macd.view(-1) < 0).float()
+        
+        penalty_macd = macd_pos * price_decrease + macd_neg * price_increase
         macd_loss = penalty_macd.mean()
 
-        return mse + 0.2 * dir_loss  + 0.1 * rsi_loss + 0.1 * macd_loss
+        # Trend Alignment Penalty
+        trend_true = torch.sign(y_true[:, 1:] - y_true[:, :-1])
+        trend_pred = torch.sign(y_pred[:, 1:] - y_pred[:, :-1])
+        trend_mismatch = (trend_true != trend_pred).float()
+        trend_loss = trend_mismatch.mean()
+
+        # Under-Prediction Penalty
+        under_prediction = (y_pred < y_true).float()
+        under_penalty = ((y_true - y_pred) * under_prediction).mean()
+
+        # Total loss
+        total_loss = (
+            mse
+            + 0.1 * dir_loss
+            + 0.05 * rsi_loss
+            + 0.05 * macd_loss
+            + 0.1 * trend_loss
+            + 0.1 * under_penalty
+        )
+        return total_loss
     
     def criterion(y_pred, y_true, fear_input, rsi_input, macd_input):
         return hybrid_loss(y_pred, y_true, fear_input, rsi_input, macd_input)
 
     # Clean the datas
-    data["RSI"] = data["RSI"].shift(3).rolling(window=5).mean() # Lag the RSI by 3 and smooth
-    data["MACD"] = data["MACD"].shift(3).rolling(window=5).mean() # Lag the MACD by 3 and smooth
-    fear_and_greed_data["Index"] = fear_and_greed_data["Index"].shift(3).rolling(window=5).mean() # Lag the Fear Index Input by 3 and smooth
+    data["RSI"] = data["RSI"].shift(3) # Lag the RSI by 3 
+    data["MACD"] = data["MACD"].shift(3) # Lag the MACD by 3 
+    fear_and_greed_data["Index"] = fear_and_greed_data["Index"].shift(3) # Lag the Fear Index Input by 3
     
     # filter_date = max(data['Date'].loc[0], fear_and_greed_data['Date'].loc[0])
     filter_date = '2018-04-17' # there are some missing datas before 04.17
@@ -338,29 +315,34 @@ def ML_MI1O(data, fear_and_greed_data, scaler):
         'Price': [],
         'Fear and Greed': [],
         'RSI': [],
-        'MACD': []
+        'MACD': [],
+        'Predicted Price': []
     }
     
-    seq_length = 30
-    for i in range(len(price_scaled) - seq_length):
+    seq_length = 60
+    output_horizon = 5
+    for i in range(len(price_scaled) - seq_length - output_horizon + 1):
         data_sets['Price'].append(price_scaled[i:i+seq_length])   # MA_50 sequence
         data_sets['RSI'].append(rsi_scaled[i + seq_length - 1])  # RSI at last step
         data_sets['MACD'].append(macd_scaled[i + seq_length - 1])  
         data_sets['Fear and Greed'].append(fear_index_scaled[i+seq_length-1])  # Volatility at last step
+
+        data_sets['Predicted Price'].append(price_scaled[i+seq_length:i+seq_length+output_horizon]) # Y data
+    
     train_size = int(len(data_sets['Price']) * 0.8)
 
     for key in data_sets:
         data_sets[key] = np.array(data_sets[key])
 
     Train = {
-        'Price': data_sets['Price'][:train_size, :-1, :],
+        'Price': data_sets['Price'][:train_size],
         'Fear and Greed': data_sets['Fear and Greed'][:train_size, -1].reshape(-1, 1),
         'RSI': data_sets['RSI'][:train_size].reshape(-1, 1),
         'MACD': data_sets['MACD'][:train_size].reshape(-1, 1),
     }
 
     Test = {
-        'Price': data_sets['Price'][train_size:, :-1, :],
+        'Price': data_sets['Price'][train_size:],
         'Fear and Greed': data_sets['Fear and Greed'][train_size:, -1].reshape(-1, 1),
         'RSI': data_sets['RSI'][train_size:].reshape(-1, 1),
         'MACD': data_sets['MACD'][train_size:].reshape(-1, 1),
@@ -372,17 +354,13 @@ def ML_MI1O(data, fear_and_greed_data, scaler):
     for key in Test:
         Test[key] = torch.from_numpy(Test[key]).float().to(device)
 
-    y_train = torch.from_numpy(data_sets['Price'][:train_size, -1, :]).type(torch.Tensor).to(device)
-    y_test = torch.from_numpy(data_sets['Price'][train_size:, -1, :]).type(torch.Tensor).to(device)
+    y_train = torch.from_numpy(data_sets['Predicted Price'][:train_size]).type(torch.Tensor).squeeze(-1).to(device)
+    y_test = torch.from_numpy(data_sets['Predicted Price'][train_size:]).type(torch.Tensor).squeeze(-1).to(device)
      
+    model = ResidualLSTM(price_input_dim=1, aux_input_dim=3, hidden_dim=128, num_layers=3, output_length=output_horizon).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
-    model = MultiInputPredictionModel(price_input_dim=1, aux_input_dim=3, hidden_dim=64, num_layers=2, output_dim=1).to(device)
-    # model = DualInputPredictionModel(first_input_dim=1, second_input_dim=1, hidden_dim=32, num_layers=2, output_dim=1).to(device)
-    # model = PredictionModel(input_dim=1, hidden_dim=32, num_layers=2, output_dim=1).to(device)
-    # criterion = nn.MSELoss()  # Binary Cross Entropy Loss
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.02)
-
-    num_epochs = 200
+    num_epochs = 500
 
     # Training loop
     for epoch in range(num_epochs):
@@ -398,6 +376,7 @@ def ML_MI1O(data, fear_and_greed_data, scaler):
             print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
 
     model.eval()
+
     y_test_pred = model(Test['Price'], torch.cat([Test['Fear and Greed'], Test['RSI'], Test['MACD']],1))
     return y_train_pred, y_train, y_test_pred, y_test
 
@@ -449,6 +428,52 @@ class MultiInputPredictionModel(nn.Module):
         combined = torch.cat((price_feat, aux_feat), dim=1)
         out = self.fc_out(combined)
         return out
+    
+class ResidualLSTM(nn.Module):
+    def __init__(self, price_input_dim, aux_input_dim, hidden_dim, output_length, num_layers, dropout_prob=0.3):
+        super(ResidualLSTM, self).__init__()
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers  # Keep it simple
+
+        self.lstm = nn.LSTM(input_size=price_input_dim,
+                            hidden_size=hidden_dim,
+                            num_layers=self.num_layers,
+                            batch_first=True,
+                            dropout=dropout_prob)
+
+        # Auxiliary indicators (e.g., RSI, MACD, Fear Index)
+        self.fc_aux = nn.Sequential(
+            nn.Linear(aux_input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout_prob)
+        )
+
+        # Output layer to produce 10-day forecast
+        self.combined_fc = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout_prob),
+            nn.Linear(hidden_dim, output_length)  # <- output_length = 10
+        )
+
+    def forward(self, price_input, aux_input):
+        batch_size = price_input.size(0)
+        device = price_input.device
+
+        h0 = torch.zeros(self.num_layers, batch_size, self.hidden_dim).to(device)
+        c0 = torch.zeros(self.num_layers, batch_size, self.hidden_dim).to(device)
+
+        lstm_out, _ = self.lstm(price_input, (h0, c0))
+        price_feat = lstm_out[:, -1, :]  # Feature from last time step
+
+        aux_feat = self.fc_aux(aux_input)
+
+        combined = torch.cat((price_feat, aux_feat), dim=1)
+        predicted_delta_sequence = self.combined_fc(combined)  # shape: (batch, 10)
+
+        last_price = price_input[:, -1, 0:1]  # Use last price as reference
+        
+        return predicted_delta_sequence + last_price  # Predict future prices
 
 def main():
     global device 
@@ -494,12 +519,12 @@ def main():
         f"Quantitative values: \nMomentum={data['momentum_20'].iloc[-1]}, \nMACD={data['MACD'].iloc[-1]}, \nROC_20={data['ROC_20'].iloc[-1]}, \nRSI={data['RSI'].iloc[-1]}, \nslope={data['slope'].iloc[-1]}"
         )
     # Plot the train data and test data
-    plot_data_ave(data, ticker, False)
-    plot_data_vol(data, ticker, False)
-    plot_data_rsi(data, ticker, False)
+    plot_data_price(data, ticker, False)
 
     fear_and_greed_data = evaluate_fear_and_greed_data(fear_and_greed_df, start_date)
-    plot_data_fear_and_greed(fear_and_greed_data, ticker, False)
+    plot_data(fear_and_greed_data, 'Index', ticker, False)
+    plot_data(data, 'RSI', ticker, False)
+    plot_data(data, 'MACD', ticker, False)
 
     # Prepare the training datas and test datas
     scaler_price = StandardScaler()
@@ -529,7 +554,7 @@ def main():
     print('train RMSE: ', train_rmse)
     print('test RMSE: ', test_rmse)
 
-    plot_data_pred(data, y_test, y_test_pred, test_rmse, ticker, True)
+    plot_data_pred(data, y_test[0], y_test_pred[0], test_rmse, ticker, True)
 
 if __name__ == "__main__":
     main()
