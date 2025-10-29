@@ -357,7 +357,7 @@ def ML_MI1O(data, fear_and_greed_data, scaler):
     y_train = torch.from_numpy(data_sets['Predicted Price'][:train_size]).type(torch.Tensor).squeeze(-1).to(device)
     y_test = torch.from_numpy(data_sets['Predicted Price'][train_size:]).type(torch.Tensor).squeeze(-1).to(device)
      
-    model = ResidualLSTM(price_input_dim=1, aux_input_dim=3, hidden_dim=128, num_layers=3, output_length=output_horizon).to(device)
+    model = ResidualLSTM(price_input_dim=1, aux_input_dim=3, hidden_dim=64, num_layers=3, output_length=output_horizon).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
     num_epochs = 500
@@ -540,8 +540,8 @@ def main():
         'MACD': scaler_MACD
         }
 
-    # y_train_pred, y_train, y_test_pred, y_test = ML_1I1O(data=data, scaler=scaler) # Price as one single input
-    y_train_pred, y_train, y_test_pred, y_test = ML_MI1O(data=data, fear_and_greed_data=fear_and_greed_data, scaler=scaler) # Price, Fear Index and RSI as three input
+    y_train_pred, y_train, y_test_pred, y_test = ML_1I1O(data=data, scaler=scaler) # Price as one single input
+    # y_train_pred, y_train, y_test_pred, y_test = ML_MI1O(data=data, fear_and_greed_data=fear_and_greed_data, scaler=scaler) # Price, Fear Index and RSI as three input
     
     y_train_pred = scaler['Price'].inverse_transform(y_train_pred.detach().cpu().numpy())
     y_train = scaler['Price'].inverse_transform(y_train.detach().cpu().numpy())
@@ -554,7 +554,7 @@ def main():
     print('train RMSE: ', train_rmse)
     print('test RMSE: ', test_rmse)
 
-    plot_data_pred(data, y_test[0], y_test_pred[0], test_rmse, ticker, True)
+    plot_data_pred(data, y_test, y_test_pred, test_rmse, ticker, True)
 
 if __name__ == "__main__":
     main()
